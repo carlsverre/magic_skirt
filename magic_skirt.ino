@@ -11,7 +11,7 @@
 #include "ardprintf.h"
 
 // General Config
-#define DEBUG                    true
+#define DEBUG                    false
 
 // BLE Config
 #define FACTORYRESET_ENABLE      0
@@ -40,13 +40,25 @@ extern uint8_t packetbuffer[];
 
 // State tracking
 #define STATE_INITIALIZE 1
-#define STATE_READY      2
+#define STATE_IDLE       2
+#define STATE_COLOR_LOOP 3
 int currentState = STATE_INITIALIZE;
 
 int initializeCounter = 0;
 
 uint32_t currentColor = 0;
 uint32_t currentBrightness = 255;
+
+int colorLoopCounter = 0;
+#define colorLoopLength 4
+uint32_t colorLoopColors[] = {
+  pixels.Color(0, 0, 255),
+  pixels.Color(0, 255, 255),
+  pixels.Color(255, 255, 0),
+  pixels.Color(255, 0, 0),
+};
+
+uint32_t prettyColor = pixels.Color(63, 240, 255);
 
 void setup() {
     if (DEBUG) {
@@ -107,44 +119,68 @@ void setup() {
 void loop() {
     if (currentState == STATE_INITIALIZE) {
         if (initializeCounter < 255) {
-            initializeCounter++;
-            pixels.setPixelColor(0, pixels.Color(0, 0, initializeCounter));
+            initializeCounter += 10;
+            currentColor = pixels.Color(0, 0, initializeCounter);
         } else {
-            currentState = STATE_READY;
-            pixels.setPixelColor(0, pixels.Color(0, 255, 0));
+            currentState = STATE_IDLE;
+            currentColor = prettyColor;
         }
-        pixels.show();
-        delay(10);
-    } else if (currentState == STATE_READY) {
+    } else if (currentState == STATE_IDLE) {
         uint8_t len = readPacket(&ble, BLE_READPACKET_TIMEOUT);
 
         // check to see if we got a color
-        if (len > 0 && packetbuffer[1] == 'C') {
-            uint8_t red = packetbuffer[2];
-            uint8_t green = packetbuffer[3];
-            uint8_t blue = packetbuffer[4];
+        if (len > 0) {
+          switch(packetbuffer[1]) {
+            case 'C': {
+              uint8_t red = packetbuffer[2];
+              uint8_t green = packetbuffer[3];
+              uint8_t blue = packetbuffer[4];
 
-            logf("Setting pixel RGB(%d, %d, %d)", red, green, blue);
-            currentColor = pixels.Color(red, green, blue);
+              logf("Setting pixel RGB(%d, %d, %d)", red, green, blue);
+              currentColor = pixels.Color(red, green, blue);
+              break;
+            }
+            case 'B': {
+              uint8_t buttnum = packetbuffer[2] - '0';
+              boolean pressed = packetbuffer[3] - '0';
+              if (pressed) {
+                if (buttnum == 1) {
+                  currentState = STATE_COLOR_LOOP;
+                } else if (buttnum == 2) {
+                  currentColor = prettyColor;
+                }
+              }
+              break;
+            }
+          }
         }
+    } else if (currentState == STATE_COLOR_LOOP) {
+      currentColor = colorLoopColors[colorLoopCounter % colorLoopLength];
+      logf("Current Color: %d", currentColor);
+      colorLoopCounter++;
 
-        // Check our current movement vectors
-        sensors_event_t accel, mag, gyro, temp;
-        lsm.getEvent(&accel, &mag, &gyro, &temp);
-
-        // print out gyroscopic data
-        float rot = abs(gyro.gyro.pitch);
-        uint8_t brightness = int((rot / 180) * 255);
-        if (brightness < 255 && brightness >= 0) {
-            logf("Setting brightness: %d from rot: %f", brightness, rot);
-            currentBrightness = brightness;
-        }
-
-        // Update any pixel changes
-        pixels.setPixelColor(0, currentColor);
-        pixels.setBrightness(currentBrightness);
-        pixels.show();
-
-        delay(100);
+      if (colorLoopCounter > 10) {
+        colorLoopCounter = 0;
+        currentState = STATE_IDLE;
+      }
     }
+
+    // Check our current movement vectors
+    sensors_event_t accel, mag, gyro, temp;
+    lsm.getEvent(&accel, &mag, &gyro, &temp);
+
+    // print out gyroscopic data
+    float rot = abs(gyro.gyro.pitch);
+    uint8_t brightness = int((rot / 180) * 255);
+    if (brightness < 255 && brightness >= 0) {
+        logf("Setting brightness: %d from rot: %f", brightness, rot);
+        currentBrightness = brightness;
+    }
+
+    // Update any pixel changes
+    pixels.setPixelColor(0, currentColor);
+    pixels.setBrightness(currentBrightness);
+    pixels.show();
+
+    delay(100);
 }
