@@ -19,7 +19,7 @@
 
 // Neopixel Config
 #define PIXELPIN        12   // Pin used to drive the NeoPixels
-#define NUMPIXELS       1   // Number of neopixels in chain
+#define NUMPIXELS       8   // Number of neopixels in chain
 
 // Setup drivers
 Adafruit_BluefruitLE_UART ble(Serial1, -1);
@@ -46,19 +46,31 @@ int currentState = STATE_INITIALIZE;
 
 int initializeCounter = 0;
 
+unsigned long lastLoopTime = 0;
+unsigned long lastStateUpdateTime = 0;
+
 uint32_t currentColor = 0;
-uint32_t currentBrightness = 255;
+uint32_t targetColor = 0;
+uint8_t currentBrightness = 255;
+uint8_t targetBrightness = currentBrightness;
 
 int colorLoopCounter = 0;
+int lastColorLoopChange = 0;
 #define colorLoopLength 4
 uint32_t colorLoopColors[] = {
-  pixels.Color(0, 0, 255),
-  pixels.Color(0, 255, 255),
-  pixels.Color(255, 255, 0),
-  pixels.Color(255, 0, 0),
+  pixels.Color(78, 255, 90),
+  pixels.Color(246, 255, 62),
+  pixels.Color(255, 148, 91),
+  pixels.Color(255, 67, 99),
+  pixels.Color(255, 59, 206),
+  pixels.Color(227, 69, 255),
+  pixels.Color(227, 69, 255),
+  pixels.Color(135, 44, 255),
+  pixels.Color(61, 103, 255),
 };
 
 uint32_t prettyColor = pixels.Color(63, 240, 255);
+uint32_t fairyColor = pixels.Color(255, 148, 91);
 
 void setup() {
     if (DEBUG) {
@@ -116,14 +128,14 @@ void setup() {
     ble.setMode(BLUEFRUIT_MODE_DATA);
 }
 
-void loop() {
+void updateState(unsigned long now) {
     if (currentState == STATE_INITIALIZE) {
         if (initializeCounter < 255) {
             initializeCounter += 10;
-            currentColor = pixels.Color(0, 0, initializeCounter);
+            targetColor = pixels.Color(0, initializeCounter, 0);
         } else {
             currentState = STATE_IDLE;
-            currentColor = prettyColor;
+            targetColor = prettyColor;
         }
     } else if (currentState == STATE_IDLE) {
         uint8_t len = readPacket(&ble, BLE_READPACKET_TIMEOUT);
@@ -137,7 +149,7 @@ void loop() {
               uint8_t blue = packetbuffer[4];
 
               logf("Setting pixel RGB(%d, %d, %d)", red, green, blue);
-              currentColor = pixels.Color(red, green, blue);
+              targetColor = pixels.Color(red, green, blue);
               break;
             }
             case 'B': {
@@ -147,7 +159,11 @@ void loop() {
                 if (buttnum == 1) {
                   currentState = STATE_COLOR_LOOP;
                 } else if (buttnum == 2) {
-                  currentColor = prettyColor;
+                  targetColor = prettyColor;
+                } else if (buttnum == 3) {
+                  targetColor = fairyColor;
+                } else {
+                  logf("Received unknown button: %d", buttnum);
                 }
               }
               break;
@@ -155,13 +171,17 @@ void loop() {
           }
         }
     } else if (currentState == STATE_COLOR_LOOP) {
-      currentColor = colorLoopColors[colorLoopCounter % colorLoopLength];
-      logf("Current Color: %d", currentColor);
-      colorLoopCounter++;
+      targetColor = colorLoopColors[colorLoopCounter % colorLoopLength];
+      int colorLoopDelta = now - lastColorLoopChange;
+      if(colorLoopDelta > 1000){
+        colorLoopCounter++;
+        lastColorLoopChange = now;
+      }
 
       if (colorLoopCounter > 10) {
         colorLoopCounter = 0;
         currentState = STATE_IDLE;
+        targetColor = prettyColor;
       }
     }
 
@@ -169,18 +189,37 @@ void loop() {
     sensors_event_t accel, mag, gyro, temp;
     lsm.getEvent(&accel, &mag, &gyro, &temp);
 
-    // print out gyroscopic data
-    float rot = abs(gyro.gyro.pitch);
-    uint8_t brightness = int((rot / 180) * 255);
-    if (brightness < 255 && brightness >= 0) {
-        logf("Setting brightness: %d from rot: %f", brightness, rot);
-        currentBrightness = brightness;
+    float rot = abs(gyro.gyro.x);
+    uint8_t brightness = constrain(int(min(1, rot / 250.0) * 255), 1, 255);
+    logf("Setting brightness: %d from rot: %f", brightness, rot);
+    targetBrightness = brightness;
+}
+
+void loop() {
+    unsigned long now = millis();
+    int stateUpdateDelta = now - lastStateUpdateTime;
+
+    if (stateUpdateDelta >= 200) {
+      lastStateUpdateTime = now;
+      updateState(now);
+    }
+
+    if (currentBrightness != targetBrightness) {
+      int bDiff = abs(targetBrightness - currentBrightness);
+      int sign = targetBrightness > currentBrightness ? 1 : -1;
+      int bChange = (sign * max(1, bDiff / 20));
+      currentBrightness = constrain(currentBrightness + bChange, 1, 255);
     }
 
     // Update any pixel changes
-    pixels.setPixelColor(0, currentColor);
+    if (currentColor != targetColor) {
+      currentColor = targetColor;
+      for (int x = 0; x < NUMPIXELS; x++) {
+        pixels.setPixelColor(x, currentColor);
+      }
+    }
     pixels.setBrightness(currentBrightness);
     pixels.show();
 
-    delay(100);
+    delay(16);
 }
